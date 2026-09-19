@@ -5,6 +5,7 @@ import com.qxotic.jinfer.chat.LoadedEmbedder;
 import com.qxotic.jinfer.chat.LoadedModel;
 import com.qxotic.jinfer.chat.LoadedReranker;
 import com.qxotic.jinfer.chat.ModelProvider;
+import com.qxotic.jinfer.chat.Models;
 import com.qxotic.jinfer.llm.SpecialTokens;
 import com.qxotic.toknroll.IntSequence;
 import com.qxotic.toknroll.Tokenizer;
@@ -13,20 +14,17 @@ import java.lang.foreign.Arena;
 import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 /**
- * {@link ModelProvider} service for {@code general.architecture} "qwen3" - the RETRIEVAL family:
- * Qwen3-Embedding (pooled vectors) and Qwen3-Reranker (yes/no judge) over one backbone. The
- * generative Qwen 3.5 models are architecture "qwen35"/"qwen35moe", served by jinfer-qwen35.
- *
- * <p>Both GGUFs declare the same architecture and cannot be told apart from metadata, so the entry
- * point the caller picks decides how the weights are read: {@link
- * com.qxotic.jinfer.chat.Models#loadEmbedder} pools, {@code loadReranker} judges. Handing an
- * embedding GGUF to the reranker (or the reverse) produces numbers, not an error - it is the
- * caller's file to choose.
+ * {@link ModelProvider} service for {@code general.architecture} "qwen3": supports generative
+ * models (such as Bonsai-8B and other Qwen3-backbone LMs) as well as the RETRIEVAL family
+ * (Qwen3-Embedding and Qwen3-Reranker).
  */
 public final class Qwen3Provider implements ModelProvider {
+    static final LoadedModel.SamplingDefaults SAMPLING_DEFAULTS =
+            new LoadedModel.SamplingDefaults(1.0f, 0.95f, 20, null);
 
     @Override
     public Set<String> architectures() {
@@ -40,11 +38,19 @@ public final class Qwen3Provider implements ModelProvider {
             Path path,
             Arena arena,
             Map<String, Path> companions,
-            Tokenizer tokenizer) {
-        throw new UnsupportedOperationException(
-                "'qwen3' is the Qwen3 RETRIEVAL family (Qwen3-Embedding, Qwen3-Reranker), not a"
-                        + " generative model - load it with Models.loadEmbedder or"
-                        + " Models.loadReranker");
+            Tokenizer tokenizer)
+            throws IOException {
+        Qwen3 model = Qwen3.loadModel(fileChannel, gguf, arena, tokenizer);
+        Tokenizer tok = model.tokenizer();
+        int eos = gguf.getValueOrDefault(int.class, "tokenizer.ggml.eos_token_id", -1);
+        return new LoadedModel<>(
+                model,
+                tok,
+                gguf.getStringOrDefault("tokenizer.chat_template", ""),
+                SpecialTokens.stops(tok, eos, "<|im_end|>", "<|endoftext|>"),
+                Models.modelSeed(fileChannel),
+                Optional.empty(),
+                SAMPLING_DEFAULTS);
     }
 
     @Override

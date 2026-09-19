@@ -114,6 +114,8 @@ public final class MatMul {
     private static final int NVFP4_BYTES = 36; // 4 ue4m3 scales + 32 packed nibbles
     private static final int Q1_0_BLOCK = 128; // elements per block
     private static final int Q1_0_BYTES = 18; // f16 scale + 16 sign bytes
+    private static final int PQ2_0_BLOCK = 128; // elements per block
+    private static final int PQ2_0_BYTES = 34; // f16 scale + 32 2-bit bytes
     private static final int TQ_BLOCK = 256;
     private static final int TQ1_0_BYTES = 54; // 48 base-3 bytes + 4 tail bytes + f16 scale
     private static final int TQ2_0_BYTES = 66; // 64 packed 2-bit bytes + f16 scale
@@ -501,6 +503,7 @@ public final class MatMul {
         if (weightType == DataType.Q6_K) return dotQ6K(w, wByte, x, xByte, k);
         if (weightType == DataType.NVFP4) return dotNvfp4(w, wByte, x, xByte, k, slot);
         if (weightType == DataType.Q1_0) return dotQ1_0(w, wByte, x, xByte, k);
+        if (weightType == DataType.PQ2_0) return dotPQ2_0(w, wByte, x, xByte, k);
         if (weightType == DataType.TQ1_0) return dotTernary(w, wByte, x, xByte, k, true, slot);
         if (weightType == DataType.TQ2_0) return dotTernary(w, wByte, x, xByte, k, false, slot);
         throw new UnsupportedOperationException("dot weight dtype " + weightType);
@@ -1025,6 +1028,15 @@ public final class MatMul {
         return ((bits >> (within % 8)) & 1) != 0 ? scale : -scale;
     }
 
+    static float getPQ2_0(MemorySegment w, long wByte, long i) {
+        long bo = wByte + i / PQ2_0_BLOCK * PQ2_0_BYTES;
+        int within = (int) (i % PQ2_0_BLOCK);
+        int packed = Byte.toUnsignedInt(readByte(w, bo + 2 + within / 4));
+        int q = (packed >>> ((within % 4) * 2)) & 3;
+        float scale = readFloat16(w, bo);
+        return (q - 1) * scale;
+    }
+
     static float getTq1_0(MemorySegment w, long wByte, long i) {
         long bo = wByte + i / TQ_BLOCK * TQ1_0_BYTES;
         int within = (int) (i % TQ_BLOCK);
@@ -1066,6 +1078,7 @@ public final class MatMul {
         if (dt == DataType.Q6_K) return getQ6K(w, wByte, i);
         if (dt == DataType.NVFP4) return getNvfp4(w, wByte, i);
         if (dt == DataType.Q1_0) return getQ1_0(w, wByte, i);
+        if (dt == DataType.PQ2_0) return getPQ2_0(w, wByte, i);
         if (dt == DataType.TQ1_0) return getTq1_0(w, wByte, i);
         if (dt == DataType.TQ2_0) return getTq2_0(w, wByte, i);
         throw new UnsupportedOperationException("scalar decode " + dt);
@@ -1821,6 +1834,35 @@ public final class MatMul {
         return result;
     }
 
+    private static float dotPQ2_0(MemorySegment w, long wByte, MemorySegment x, long xByte, int k) {
+        if (!USE_VECTOR_API) return scalarDotLegacy(w, wByte, x, xByte, k, DataType.PQ2_0);
+        int upperBound = k / PQ2_0_BLOCK * PQ2_0_BLOCK;
+        float result = 0f;
+        long b0 = wByte;
+        int j = 0;
+        for (; j < upperBound; j += PQ2_0_BLOCK, b0 += PQ2_0_BYTES) {
+            float d = readFloat16(w, b0);
+            float sum = 0f;
+            for (int b = 0; b < 32; b++) {
+                int byteVal = Byte.toUnsignedInt(readByte(w, b0 + 2 + b));
+                int q0 = (byteVal & 3) - 1;
+                int q1 = ((byteVal >>> 2) & 3) - 1;
+                int q2 = ((byteVal >>> 4) & 3) - 1;
+                int q3 = ((byteVal >>> 6) & 3) - 1;
+                long xOff = xByte + 4L * (j + b * 4);
+                sum += q0 * readFloat(x, xOff);
+                sum += q1 * readFloat(x, xOff + 4L);
+                sum += q2 * readFloat(x, xOff + 8L);
+                sum += q3 * readFloat(x, xOff + 12L);
+            }
+            result += sum * d;
+        }
+        if (j < k) {
+            result += scalarDotLegacy(w, b0, x, xByte + 4L * j, k - j, DataType.PQ2_0);
+        }
+        return result;
+    }
+
     private static final float[][] TQ_SCRATCH = new float[Parallel.threads()][TQ_BLOCK];
 
     private static float dotTernary(
@@ -2000,6 +2042,7 @@ public final class MatMul {
                 && dt != DataType.MXFP4
                 && dt != DataType.NVFP4
                 && dt != DataType.Q1_0
+                && dt != DataType.PQ2_0
                 && dt != DataType.FP32
                 && dt != DataType.FP16
                 && dt != DataType.BF16) return false;
@@ -2033,6 +2076,7 @@ public final class MatMul {
         if (dt == DataType.MXFP4) return JAM.MXFP4;
         if (dt == DataType.NVFP4) return JAM.NVFP4;
         if (dt == DataType.Q1_0) return JAM.Q1_0;
+        if (dt == DataType.PQ2_0) return JAM.PQ2_0;
         if (dt == DataType.FP32) return JAM.F32;
         if (dt == DataType.FP16) return JAM.F16;
         if (dt == DataType.BF16) return JAM.BF16;

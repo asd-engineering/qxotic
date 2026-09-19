@@ -274,11 +274,20 @@ public enum GGMLType {
      * Layout: [{d: fp16, qs: uint8[16]}]. 1-bit sign quantization: fp16 scale + 128 sign bits
      * (LSB-first within each byte); element = bit set ? +d : -d. 1.125 bpw.
      */
-    Q1_0(18, 128);
+    Q1_0(18, 128),
+
+    /**
+     * PrismML PQ2_0 (type ID 142): 2-bit quantization at group size 128. Layout: [{d: fp16, qs:
+     * uint8[32]}]. 1 fp16 scale + 128 2-bit quants. 2.125 bpw.
+     */
+    PQ2_0(142, 34, 128);
 
     // ============================================================
     // Fields
     // ============================================================
+
+    /** Explicit type ID, or -1 to default to ordinal. */
+    private final int typeId;
 
     /** Size in bytes for all elements in a block. */
     private final int blockByteSize;
@@ -291,6 +300,11 @@ public enum GGMLType {
     // ============================================================
 
     GGMLType(int blockByteSize, int elementsPerBlock) {
+        this(-1, blockByteSize, elementsPerBlock);
+    }
+
+    GGMLType(int typeId, int blockByteSize, int elementsPerBlock) {
+        this.typeId = typeId;
         if (blockByteSize == 0 && elementsPerBlock == 0) {
             this.blockByteSize = 0;
             this.elementsPerBlock = 0;
@@ -318,9 +332,11 @@ public enum GGMLType {
     // Public API
     // ============================================================
 
-    /** Returns the GGML type ID (equivalent to ordinal in the {@code ggml_type} enum). */
+    /**
+     * Returns the GGML type ID (equivalent to ordinal in the {@code ggml_type} enum, or custom ID).
+     */
     public int getId() {
-        return ordinal();
+        return typeId >= 0 ? typeId : ordinal();
     }
 
     /** Returns the size in bytes for all elements in a block. */
@@ -379,6 +395,9 @@ public enum GGMLType {
      * @throws IllegalArgumentException if the ID is unknown
      */
     public static GGMLType fromId(int id) {
+        if (id == 142) {
+            return PQ2_0;
+        }
         if (id < 0 || id >= VALUES.length) {
             throw new IllegalArgumentException("Unknown GGML type ID: " + id);
         }

@@ -43,6 +43,7 @@ final class Decode {
             case MXFP4 -> mxfp4(stage(w, src, count), count, out, at);
             case NVFP4 -> nvfp4(stage(w, src, count), count, out, at);
             case Q1_0 -> q1_0(stage(w, src, count), count, out, at);
+            case PQ2_0 -> pq2_0(stage(w, src, count), count, out, at);
         }
         Arrays.fill(out, at + count, at + pad, 0f);
     }
@@ -216,6 +217,24 @@ final class Decode {
             for (int e = 0; e < 16; e++) {
                 int bits = q[p + 2 + e], to = o + 8 * e;
                 for (int i = 0; i < 8; i++) out[to + i] = (((bits >> i) & 1) * 2 - 1) * d;
+            }
+        }
+    }
+
+    /**
+     * Block (34 B, 128 elements): f16 d, 32 bytes of 2-bit quants; v = (((b >> (2*i)) & 3) - 1) *
+     * d.
+     */
+    static void pq2_0(byte[] q, int count, float[] out, int at) {
+        for (int o = at, p = 0, end = at + count; o < end; o += 128, p += 34) {
+            float d = f16(q, p);
+            for (int e = 0; e < 32; e++) {
+                int b = q[p + 2 + e] & 0xFF;
+                int to = o + 4 * e;
+                out[to + 0] = ((b & 3) - 1) * d;
+                out[to + 1] = (((b >> 2) & 3) - 1) * d;
+                out[to + 2] = (((b >> 4) & 3) - 1) * d;
+                out[to + 3] = (((b >> 6) & 3) - 1) * d;
             }
         }
     }
